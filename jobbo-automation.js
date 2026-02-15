@@ -53,10 +53,12 @@
     const keyCode = key === 'ArrowUp' ? 38 : key === 'ArrowDown' ? 40 : key === 'ArrowLeft' ? 37 : 39;
     const opts = { key, code: key, keyCode, which: keyCode, bubbles: true, cancelable: true };
     const el = target || document.activeElement || document.body;
-    el.dispatchEvent(new KeyboardEvent('keydown', opts));
-    el.dispatchEvent(new KeyboardEvent('keyup', opts));
-    window.dispatchEvent(new KeyboardEvent('keydown', opts));
-    window.dispatchEvent(new KeyboardEvent('keyup', opts));
+    for (const e of [el, document.body, document, document.documentElement, window]) {
+      if (e) {
+        e.dispatchEvent(new KeyboardEvent('keydown', opts));
+        e.dispatchEvent(new KeyboardEvent('keyup', opts));
+      }
+    }
   }
 
   const MAX_BOARD_SIZE = 60;
@@ -85,8 +87,9 @@
         const cols = repeatMatch ? parseInt(repeatMatch[1], 10) : (() => { const s = Math.sqrt(cells.length); return Number.isInteger(s) ? s : 25; })();
         const rows = cells.length / cols;
         if (rows >= 1 && Number.isInteger(rows)) {
-          const playerIdx = cells.findIndex((c) => c.classList.contains('player'));
-          const appleIdx = cells.findIndex((c) => c.classList.contains('apple'));
+          // Use last occurrence when game has duplicate player/apple (e.g. during re-render)
+          const playerIdx = cells.findLastIndex ? cells.findLastIndex((c) => c.classList.contains('player')) : (() => { let i = -1; cells.forEach((c, idx) => { if (c.classList.contains('player')) i = idx; }); return i; })();
+          const appleIdx = cells.findLastIndex ? cells.findLastIndex((c) => c.classList.contains('apple')) : (() => { let i = -1; cells.forEach((c, idx) => { if (c.classList.contains('apple')) i = idx; }); return i; })();
           if (playerIdx >= 0 && appleIdx >= 0) {
             const result = { cols, rows, cells, playerIndex: playerIdx, appleIndex: appleIdx, getCoord: (_, i) => [i % cols, Math.floor(i / cols)] };
             if (validGrid(result)) return result;
@@ -229,20 +232,31 @@
    * Run one step: compute path and execute moves with delay.
    * Calls onDone() when the full move sequence has been sent (optional).
    */
-  function runStep(delayMs = 5, onDone) {
+  function runStep(delayMs = 10, onDone) {
     const grid = discoverGrid();
     if (!grid) {
       console.warn('JOBBO: Could not find game grid. Make sure you are on the game board and the board is visible.');
       return;
     }
 
-    const { cols, rows, playerIndex, appleIndex, getCoord } = grid;
+    const { cols, rows, playerIndex, appleIndex, getCoord, cells } = grid;
     const [px, py] = getCoord(null, playerIndex);
     const [ax, ay] = getCoord(null, appleIndex);
     const path = bfs(px, py, ax, ay, cols, rows, null);
     if (!path) {
       console.warn('JOBBO: No path found (walls?).');
       return;
+    }
+
+    var keyTarget = (cells && cells[0]) ? (cells[0].closest && cells[0].closest('.game-board')) : null;
+    if (keyTarget && !keyTarget.hasAttribute('tabindex')) {
+      keyTarget.setAttribute('tabindex', '-1');
+    }
+    if (keyTarget && typeof keyTarget.focus === 'function') {
+      keyTarget.focus();
+    }
+    if (typeof window.focus === 'function') {
+      window.focus();
     }
 
     console.log(`JOBBO: Player (${px},${py}) -> Apple (${ax},${ay}), path length ${path.length}`);
@@ -253,7 +267,7 @@
         if (typeof onDone === 'function') onDone();
         return;
       }
-      dispatchKey(path[i]);
+      dispatchKey(path[i], keyTarget);
       i++;
       setTimeout(sendNext, delayMs);
     }
@@ -273,37 +287,56 @@
   }
 
   /**
-   * After reaching apple: wait a short delay for the next level to render, then run again.
+   * After reaching apple: wait for the level to actually change before running again (avoids phantom (0,2)->(0,6) loop).
    */
-  function waitForLevelReadyThenRun(delayMs, levelCheckIntervalMs) {
-    const RESUME_DELAY_MS = 150;
+  function waitForLevelReadyThenRun(delayMs, levelCheckIntervalMs, levelWhenDone) {
+    const RESUME_DELAY_MS = 280;
+    const POLL_MS = 80;
+    const MAX_WAIT_MS = 4000;
+    const BOARD_SETTLE_MS = 180;
 
-    function resume() {
+    function tryResume() {
       const level = getCurrentLevel();
       if (level != null && level >= 1000) {
         console.log('JOBBO: Reached level 1000. Stopping.');
         return;
       }
-      console.log('JOBBO: Resuming for level ' + (level != null ? level : '?') + '.');
-      runLoop(delayMs, levelCheckIntervalMs);
+      const levelChanged = levelWhenDone != null && level != null && level !== levelWhenDone;
+      if (levelChanged || levelWhenDone == null) {
+        console.log('JOBBO: Resuming for level ' + (level != null ? level : '?') + '.');
+        setTimeout(() => runLoop(delayMs, levelCheckIntervalMs), BOARD_SETTLE_MS);
+        return true;
+      }
+      return false;
     }
 
-    setTimeout(resume, RESUME_DELAY_MS);
+    let elapsed = 0;
+    function tick() {
+      if (tryResume()) return;
+      elapsed += POLL_MS;
+      if (elapsed < MAX_WAIT_MS) setTimeout(tick, POLL_MS);
+      else {
+        console.log('JOBBO: Level did not change after ' + (MAX_WAIT_MS / 1000) + 's, resuming anyway.');
+        setTimeout(() => runLoop(delayMs, levelCheckIntervalMs), BOARD_SETTLE_MS);
+      }
+    }
+    setTimeout(() => { if (!tryResume()) tick(); }, RESUME_DELAY_MS);
   }
 
   /**
    * Run continuously: after each step, when our move sequence is done we wait then run again. Stops at level 1000.
    */
-  function runLoop(delayMs = 5, levelCheckIntervalMs = 500) {
+  function runLoop(delayMs = 10, levelCheckIntervalMs = 500) {
     const level = getCurrentLevel();
     if (level != null && level >= 1000) {
       console.log('JOBBO: Already at level 1000. Stopping.');
       return;
     }
+    const levelBeforeStep = getCurrentLevel();
     function doStep() {
       const g = discoverGrid();
       if (g) {
-        runStep(delayMs, () => waitForLevelReadyThenRun(delayMs, levelCheckIntervalMs));
+        runStep(delayMs, () => waitForLevelReadyThenRun(delayMs, levelCheckIntervalMs, levelBeforeStep));
         return true;
       }
       return false;
@@ -323,5 +356,5 @@
     dispatchKey,
   };
 
-  console.log('JOBBO automation loaded. Usage: JOBBO.runStep() or JOBBO.runLoop(). Max speed: JOBBO.runLoop(0) or JOBBO.runLoop(1).');
+  console.log('JOBBO automation loaded. Usage: JOBBO.runStep() or JOBBO.runLoop(). If the character does not move, click the game board once then run again.');
 })();
