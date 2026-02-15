@@ -229,7 +229,7 @@
    * Run one step: compute path and execute moves with delay.
    * Calls onDone() when the full move sequence has been sent (optional).
    */
-  function runStep(delayMs = 50, onDone) {
+  function runStep(delayMs = 30, onDone) {
     const grid = discoverGrid();
     if (!grid) {
       console.warn('JOBBO: Could not find game grid. Make sure you are on the game board and the board is visible.');
@@ -276,7 +276,7 @@
    * After reaching apple: wait a short delay for the next level to render, then run again.
    */
   function waitForLevelReadyThenRun(delayMs, levelCheckIntervalMs) {
-    const RESUME_DELAY_MS = 800;
+    const RESUME_DELAY_MS = 500;
 
     function resume() {
       const level = getCurrentLevel();
@@ -294,7 +294,7 @@
   /**
    * Run continuously: after each step, when our move sequence is done we wait then run again. Stops at level 1000.
    */
-  function runLoop(delayMs = 50, levelCheckIntervalMs = 500) {
+  function runLoop(delayMs = 30, levelCheckIntervalMs = 500) {
     const level = getCurrentLevel();
     if (level != null && level >= 1000) {
       console.log('JOBBO: Already at level 1000. Stopping.');
@@ -323,5 +323,5 @@
     dispatchKey,
   };
 
-  console.log('JOBBO automation loaded. Usage: JOBBO.runStep() or JOBBO.runLoop(). Faster: JOBBO.runLoop(40) or JOBBO.runLoop(30).');
+  console.log('JOBBO automation loaded. Usage: JOBBO.runStep() or JOBBO.runLoop(). Even faster: JOBBO.runLoop(20) or JOBBO.runLoop(15).');
 })();
